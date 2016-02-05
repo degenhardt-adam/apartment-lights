@@ -1,0 +1,10 @@
+{
+    "default_color": 36000,
+    "default_sat": 254,
+    "alt_color": 15000,
+    "alt_sat": 25, 
+    "host_name": "192.168.1.16",
+    "hue_url": "http://192.168.1.2/api/2e1bee357280d2a6b7a47a03030a3ee",
+    "party_delay": 0.05,
+    "party_transition": 1
+}
