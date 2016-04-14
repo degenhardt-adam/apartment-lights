@@ -21,9 +21,13 @@ HANDLERS = {
     '/bed_on': 'bed_on',
     '/bed_off': 'bed_off',
     '/bed_switch': 'bed_switch',
+    '/bath_on': 'bath_on',
+    '/bath_off': 'bath_off',
+    '/bath_switch': 'bath_switch',
     '/color': 'color',
     '/random': 'random',
-    '/party': 'party'
+    '/party': 'party',
+    '/bath_party': 'bath_party'
 }
 
 # Load settings
@@ -35,7 +39,9 @@ global_state = {
     'default_color': True,
     'main_room_on': True,
     'bedroom_on': True,
-    'party': False
+    'bathroom_on': True,
+    'party': False,
+    'bath_party': False
 }
 
 # Toggle lights in main room
@@ -88,6 +94,32 @@ def bed_off():
     }
     set_group('2', state)
 
+# Toggle lights in bathroom
+def bath_switch():
+    global_state['bathroom_on'] = not global_state['bathroom_on']
+    global_state['bath_party'] = False
+    state = {
+        'on': global_state['bathroom_on']
+    }
+    set_group('8', state)
+
+# Turn on lights in bathroom
+def bath_on():
+    global_state['bathroom_on'] = True
+    state = {
+        'on': global_state['bathroom_on']
+    }
+    set_group('8', state)
+
+# Turn off lights in bathroom
+def bath_off():
+    global_state['bathroom_on'] = False
+    global_state['bath_party'] = False
+    state = {
+        'on': global_state['bathroom_on']
+    }
+    set_group('8', state)
+
 # Change color of lights in main room
 def color():
     global_state['party'] = False
@@ -126,6 +158,30 @@ def party_mode():
         time.sleep(settings['party_delay'])
     on()
 
+# Start bathroom party mode
+def bath_party():
+    bath_on()
+    global_state['bath_party'] = not global_state['bath_party']
+    if global_state['bath_party']:
+        thread.start_new_thread(bath_party_mode, ())
+
+# Bathroom party mode internals
+def bath_party_mode():
+    group = 1
+    groups = {
+        1: ['4', '9'],
+        2: ['5']
+    }
+    while global_state['bath_party']:
+        hue = rand.randint(0, 65535)
+        for light in groups[group]:
+            set_light(light, {'hue': hue, 'transitiontime': settings['party_transition']})
+        group += 1
+        if group > 2:
+            group = 1
+        time.sleep(settings['bath_party_delay'])
+    on()
+
 # Helper function. Set state of a group
 def set_group(group, state, default_color=True):
     if default_color:
@@ -148,7 +204,6 @@ def set_group(group, state, default_color=True):
 def set_light(light, state):
     r = requests.put(settings['hue_url'] + '/lights/' + light + '/state', json.dumps(state))
     pprint(r.text)
-
 
 
 # Server code. Probably don't touch this
