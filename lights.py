@@ -9,204 +9,220 @@ import BaseHTTPServer
 from pprint import pprint
 import random as rand
 
-"""
-Define function names for handlers
-path_to_handle, function name
-"""
-
-HANDLERS = {
-    '/on': 'on',
-    '/off': 'off',
-    '/switch': 'switch',
-    '/bed_on': 'bed_on',
-    '/bed_off': 'bed_off',
-    '/bed_switch': 'bed_switch',
-    '/bath_on': 'bath_on',
-    '/bath_off': 'bath_off',
-    '/bath_switch': 'bath_switch',
-    '/color': 'color',
-    '/random': 'random',
-    '/party': 'party',
-    '/bath_party': 'bath_party'
-}
 
 # Load settings
 with open('settings.json') as settings_file:
     settings = json.load(settings_file)
 
-# Globals
-global_state = {
-    'default_color': True,
-    'main_room_on': True,
-    'bedroom_on': True,
-    'bathroom_on': True,
-    'party': False,
-    'bath_party': False
-}
 
-# Toggle lights in main room
-def switch():
-    global_state['main_room_on'] = not global_state['main_room_on']
-    global_state['party'] = False
-    state = {
-        'on': global_state['main_room_on']
-    }
-    set_group('1', state, global_state['default_color'])
+# Represents a set of bulbs in one physical place i.e. a "glass boob"
+class Light:
+    def __init__(self, bulbs):
+        self.bulbs = bulbs
 
-# Turn on lights in main room
-def on():
-    global_state['main_room_on'] = True
-    state = {
-        'on': global_state['main_room_on']
-    }
-    set_group('1', state, global_state['default_color'])
+    def set(self, state):
+        for bulb in self.bulbs:
+            r = requests.put(
+                settings['hue_url'] + '/lights/' + str(bulb) + '/state',
+                json.dumps(state)
+            )
+            pprint(r.text)
 
-# Turn off lights in main room
-def off():
-    global_state['main_room_on'] = False
-    global_state['party'] = False
-    state = {
-        'on': global_state['main_room_on']
-    }
-    set_group('1', state, global_state['default_color'])
 
-# Toggle lights in bedroom
-def bed_switch():
-    global_state['bedroom_on'] = not global_state['bedroom_on']
-    state = {
-        'on': global_state['bedroom_on']
-    }
-    set_group('2', state)
-
-# Turn on lights in bedroom
-def bed_on():
-    global_state['bedroom_on'] = True
-    state = {
-        'on': global_state['bedroom_on']
-    }
-    set_group('2', state)
-
-# Turn off lights in bedroom
-def bed_off():
-    global_state['bedroom_on'] = False
-    state = {
-        'on': global_state['bedroom_on']
-    }
-    set_group('2', state)
-
-# Toggle lights in bathroom
-def bath_switch():
-    global_state['bathroom_on'] = not global_state['bathroom_on']
-    global_state['bath_party'] = False
-    state = {
-        'on': global_state['bathroom_on']
-    }
-    set_group('8', state)
-
-# Turn on lights in bathroom
-def bath_on():
-    global_state['bathroom_on'] = True
-    state = {
-        'on': global_state['bathroom_on']
-    }
-    set_group('8', state)
-
-# Turn off lights in bathroom
-def bath_off():
-    global_state['bathroom_on'] = False
-    global_state['bath_party'] = False
-    state = {
-        'on': global_state['bathroom_on']
-    }
-    set_group('8', state)
-
-# Change color of lights in main room
-def color():
-    global_state['party'] = False
-    global_state['default_color'] = not global_state['default_color']
-    set_group('1', {}, global_state['default_color'])
-
-# Set main room color to random color
-def random():
-    hue = rand.randint(0, 65535)
-    set_group('1', {'hue': hue})
-
-# Start party mode
-def party():
-    on()
-    global_state['party'] = not global_state['party']
-    if global_state['party']:
-        thread.start_new_thread(party_mode, ())
-
-# Party mode internals
-def party_mode():
-    group = 3
-    groups = {
-        3: ['1', '2'],
-        4: ['6', '8'],
-        5: ['10'],
-        6: ['11', '12'],
-        7: ['13', '14']
-    }
-    while global_state['party']:
-        hue = rand.randint(0, 65535)
-        for light in groups[group]:
-            set_light(light, {'hue': hue, 'transitiontime': settings['party_transition']})
-        group += 1
-        if group > 7:
-            group = 3
-        time.sleep(settings['party_delay'])
-    on()
-
-# Start bathroom party mode
-def bath_party():
-    bath_on()
-    global_state['bath_party'] = not global_state['bath_party']
-    if global_state['bath_party']:
-        thread.start_new_thread(bath_party_mode, ())
-
-# Bathroom party mode internals
-def bath_party_mode():
-    group = 1
-    groups = {
-        1: ['4', '9'],
-        2: ['5']
-    }
-    while global_state['bath_party']:
-        hue = rand.randint(0, 65535)
-        for light in groups[group]:
-            set_light(light, {'hue': hue, 'transitiontime': settings['party_transition']})
-        group += 1
-        if group > 2:
-            group = 1
-        time.sleep(settings['bath_party_delay'])
-    on()
-
-# Helper function. Set state of a group
-def set_group(group, state, default_color=True):
-    if default_color:
-        set_state = {
-            'bri': 254,
-            'sat': settings['default_sat'],
-            'hue': settings['default_color']
+# Represents a group of lights i.e. the bathroom
+#
+# Methods with the name *_handler handle incoming requests.
+# For example, a request to /mainroom/on calls the mainroom LightGroup's
+# on_handler() method.
+#
+# Methods with the name *_mode define continuous modes and have to be
+# specially handled because of threading stuff. They should be started by calling
+# start_mode(<mode>) and must end with the line 
+# self.mode_ended = True
+class LightGroup:
+    def __init__(self, name, lights):
+        self.lights = lights
+        self.name = name
+        self.on = False
+        self.mode = 'none'
+        self.mode_ended = False
+        
+        # Create group with Hue API
+        group_bulbs = []
+        for light in lights:
+            for bulb in light.bulbs:
+                group_bulbs.append(str(bulb))
+        group_info = {
+            'lights': group_bulbs,
+            'name': name,
+            'type': 'LightGroup'
         }
+        try:
+            r = requests.post(settings['hue_url'] + '/groups', json.dumps(group_info))
+            self.group_id = json.loads(r.text)[0]['success']['id']
+        except:
+            pprint('Failed to create group ' + name)
+
+        # Register group
+        groups[name] = self
+
+
+    # Handle /on
+    def on_handler(self):
+        self.on = True
+        self.start_mode('on')
+
+    # On mode
+    def on_mode(self):
+        while self.mode == 'on':
+            self.set_group({
+                'on': True,
+                'bri': 254,
+                'sat': settings['default_sat'],
+                'hue': settings['default_color']
+            })
+            time.sleep(settings['on_delay'])
+        self.mode_ended = True
+
+
+    # Handle /off
+    def off_handler(self):
+        self.set_group({'on': False})
+        self.on = False
+
+
+    # Default handler. Toggle lights
+    def default_handler(self):
+        if self.on:
+            self.off_handler()
+        else:
+            self.on_handler()
+
+
+    # Handle /party
+    def party_handler(self):
+        self.start_mode('party')
+
+    # Party mode
+    def party_mode(self):
+        self.set_group({
+            'on': True,
+            'bri': 254,
+            'sat': 254
+        })
+        while self.mode == 'party':
+            for light in self.lights:
+                light.set({
+                    'hue': rand.randint(0, 65535),
+                    'transitiontime': settings['party_transition'],
+                })
+                time.sleep(settings['party_delay'] / len(self.lights))
+                if self.mode != 'party':
+                    break
+        self.mode_ended = True
+
+
+
+    # Helper method to set state of group
+    def set_group(self, state):
+        r = requests.put(
+            settings['hue_url'] + '/groups/' + self.group_id + '/action',
+            json.dumps(state)
+        )
+        pprint(r.text)
+
+
+    # Begin mode
+    def start_mode(self, mode):
+        self.mode = mode
+        method = getattr(self, mode + '_mode')
+        thread.start_new_thread(method, ())
+
+    # Used by the server to correctly switch between modes
+    def end_mode(self):
+        self.mode = 'none'
+        while not self.mode_ended:
+            pass
+        self.mode_ended = False
+
+
+# Initializing code beyond here. This runs once when the server is started.
+
+# Clear groups
+old_groups = requests.get(settings['hue_url'] + '/groups')
+for group_id in old_groups.json().keys():
+    pprint('Deleting group ' + group_id)
+    requests.delete(settings['hue_url'] + '/groups/' + group_id)
+
+# Registry of light groups
+groups = {}
+
+# Bulb numbers:
+# 1 - Door A
+# 2 - Door B
+# 3 - Bedroom Lamp
+# 4 - Bathroom Mirror Right
+# 5 - Shower
+# 6 - Desk A
+# 7 - Bedroom Dresser
+# 8 - Desk B
+# 9 - Bathroom Mirror Left
+# 10 - Kitchen
+# 11 - Laundry A
+# 12 - Laundry B
+# 13 - Hallway A
+# 14 - Hallway B
+# 15 - Closet A
+# 16 - Closet B
+
+# Create groups
+LightGroup('mainroom', [
+    Light([1, 2]),
+    Light([6, 8]),
+    Light([10]),
+    Light([11, 12]),
+    Light([13, 14])
+])
+LightGroup('bedroom', [
+    Light([3]),
+    Light([7])
+])
+LightGroup('bathroom', [
+    Light([4]),
+    Light([5]),
+    Light([9])
+])
+LightGroup('closet', [
+    Light([15, 16])
+])
+
+pprint('Ready')
+
+
+
+# Server code beyond here. Probably don't touch it.
+
+# Called when server receives GET request to path
+def handle_path(path):
+    path_pieces = path.split('/')
+    pprint(path_pieces)
+    group = groups.get(path_pieces[1])
+    if group:
+        if group.mode != 'none':
+            group.end_mode()
+        try:
+            method = getattr(group, path_pieces[2] + '_handler')
+            method()
+        except AttributeError:
+            if not path_pieces[2]:
+                group.default_handler()
+            else:
+                pprint('Invalid path: ' + path)
+        except IndexError:
+            group.default_handler()
     else:
-        set_state = {
-            'bri': 254,
-            'sat': settings['alt_sat'],
-            'hue': settings['alt_color']
-        }
-    set_state.update(state)
-    r = requests.put(settings['hue_url'] + '/groups/' + group + '/action', json.dumps(set_state))
-    pprint(r.text)
+        pprint('Invalid path: ' + path)
 
-# Helper function. Set state of a light
-def set_light(light, state):
-    r = requests.put(settings['hue_url'] + '/lights/' + light + '/state', json.dumps(state))
-    pprint(r.text)
-
-
-# Server code. Probably don't touch this
 class MyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
     def do_HEAD(s):
         s.send_response(200)
@@ -215,8 +231,7 @@ class MyHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
         pprint(s.path)
         try:
-            handler = HANDLERS[s.path]
-            globals()[handler]()
+            handle_path(s.path)
         except KeyError:
             pass
     def do_GET(s):
