@@ -46,6 +46,7 @@ class LightGroup:
         self.on = False
         self.mode = 'none'
         self.mode_ended = False
+        self.secondary_color = False
         
         # Create group with Hue API
         group_bulbs = []
@@ -70,25 +71,31 @@ class LightGroup:
     # Handle /on
     def on_handler(self):
         self.on = True
-        self.start_mode('on')
-
-    # On mode
-    def on_mode(self):
-        while self.mode == 'on':
-            self.set_group({
-                'on': True,
-                'bri': 254,
-                'sat': settings['default_sat'],
-                'hue': settings['default_color']
-            })
-            time.sleep(settings['on_delay'])
-        self.mode_ended = True
+        if self.secondary_color:
+            hue = settings['secondary_color']
+            sat = settings['secondary_sat']
+        else:
+            hue = settings['default_color']
+            sat = settings['default_sat']
+        self.set_group({
+            'on': True,
+            'bri': 254,
+            'sat': sat,
+            'hue': hue
+        })
 
 
     # Handle /off
     def off_handler(self):
         self.set_group({'on': False})
         self.on = False
+
+
+    # Handle /color
+    def color_handler(self):
+        self.secondary_color = not self.secondary_color
+        if self.on:
+            self.on_handler()
 
 
     # Default handler. Toggle lights
